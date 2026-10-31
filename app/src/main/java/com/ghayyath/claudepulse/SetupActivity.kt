@@ -1,269 +1,210 @@
 package com.ghayyath.claudepulse
 
 import android.app.Activity
-import android.appwidget.AppWidgetManager
-import android.content.ComponentName
-import android.content.Context
+import android.app.AlertDialog
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.text.InputType
 import android.view.View
-import android.view.inputmethod.InputMethodManager
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
-import androidx.work.*
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
+/** Phone-only setup for four isolated Claude OAuth sessions. */
 class SetupActivity : Activity() {
-
     private val executor = Executors.newSingleThreadExecutor()
+    private lateinit var picker: Spinner
+    private lateinit var status: TextView
+    private lateinit var codeInput: EditText
+    private lateinit var verifyButton: Button
+    private var accounts = listOf<AccountVault.Account>()
+    private var selectedId = "ibrahim"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_setup)
-
-        val tokenInput = findViewById<EditText>(R.id.token_input)
-        val connectButton = findViewById<Button>(R.id.connect_button)
-        val statusText = findViewById<TextView>(R.id.status_text)
-        val errorBanner = findViewById<LinearLayout>(R.id.error_banner)
-        val signInButton = findViewById<Button>(R.id.sign_in_button)
-
-        signInButton.setOnClickListener {
-            val url = TokenManager.buildLoginUrl(this)
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-            statusText.text = "After approving, copy the code and paste it below."
-            statusText.setTextColor(0xFFAAAAAA.toInt())
-            statusText.visibility = View.VISIBLE
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+            setBackgroundColor(Color.rgb(16, 22, 34))
         }
+        setContentView(ScrollView(this).apply { addView(root) })
+        root.addView(label("TRIGENYS • CLAUDE MONITOR", 20f, Color.WHITE))
+        root.addView(label("Quatre comptes indépendants, un seul widget.", 13f, 0xFFB0BFCE.toInt()))
+        root.addView(label("Compte à connecter", 15f, Color.WHITE))
 
-        // If already connected, validate the token in background
-        if (TokenManager.hasCredentials(this)) {
-            statusText.text = "Validating token..."
-            statusText.setTextColor(0xFFAAAAAA.toInt())
-            statusText.visibility = View.VISIBLE
-            connectButton.text = "Update Token"
-
-            // Show masked token as hint
-            val masked = TokenManager.getMaskedToken(this)
-            if (masked != null) {
-                tokenInput.hint = masked
-            }
-
-            val appContext = applicationContext
-            executor.execute {
-                val result = ApiClient.fetchUsage(appContext)
-                runOnUiThread {
-                    if (isFinishing) return@runOnUiThread
-                    when (result.error) {
-                        null -> {
-                            // Token is valid
-                            statusText.text = "Connected \u2714"
-                            statusText.setTextColor(0xFF4CAF50.toInt())
-                            errorBanner.visibility = View.GONE
-                        }
-                        "auth_error" -> {
-                            // Token is expired/invalid — show recovery banner
-                            showErrorState(statusText, errorBanner, tokenInput)
-                        }
-                        "rate_limited" -> {
-                            statusText.text = "Connected \u2714 Usage data temporarily unavailable (rate limited)"
-                            statusText.setTextColor(0xFF4CAF50.toInt())
-                            statusText.visibility = View.VISIBLE
-                            errorBanner.visibility = View.GONE
-                            val masked = TokenManager.getMaskedToken(this@SetupActivity)
-                            if (masked != null) tokenInput.hint = masked
-                        }
-                        else -> {
-                            // Network error or other — assume token is probably fine
-                            statusText.text = "Connected \u2714 Could not verify (offline?)"
-                            statusText.setTextColor(0xFFAAAAAA.toInt())
-                            statusText.visibility = View.VISIBLE
-                            errorBanner.visibility = View.GONE
-                            val masked = TokenManager.getMaskedToken(this@SetupActivity)
-                            if (masked != null) tokenInput.hint = masked
-                        }
-                    }
-                }
-            }
-        } else {
-            // Check if we have a cached auth_error (came from widget tap)
-            val prefs = getSharedPreferences("pulse_cache", Context.MODE_PRIVATE)
-            if (prefs.getBoolean("auth_error", false)) {
-                showErrorState(statusText, errorBanner, tokenInput)
+        picker = Spinner(this).apply { setBackgroundColor(Color.WHITE) }
+        root.addView(picker)
+        picker.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                accounts.getOrNull(position)?.let { selectedId = it.id }
+                updateStatus()
             }
         }
 
-        connectButton.setOnClickListener {
-            // Strip all whitespace: tokens copied from a terminal often wrap across lines
-            val token = tokenInput.text.toString().replace(Regex("\\s+"), "")
-            if (token.isEmpty()) {
-                statusText.text = "Please paste a token"
-                statusText.setTextColor(0xFFF44336.toInt())
-                statusText.visibility = View.VISIBLE
-                return@setOnClickListener
+        root.addView(button("Renommer le compte") { renameSelected() })
+        root.addView(button("Se connecter à Claude") {
+            try {
+                val url = TokenManager.buildLoginUrl(this, selectedId)
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                status.text = "Autorise la connexion puis copie le code complet, avec #state."
+            } catch (_: Exception) { status.text = "Impossible de démarrer la connexion." }
+        })
+        root.addView(label("Code d'autorisation du compte sélectionné", 12f, Color.WHITE))
+        codeInput = EditText(this).apply {
+            hint = "Coller code#state"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setTextColor(Color.BLACK)
+            setHintTextColor(Color.DKGRAY)
+            setBackgroundColor(Color.WHITE)
+        }
+        root.addView(codeInput)
+        verifyButton = button("Valider la connexion") { validateCode() }
+        root.addView(verifyButton)
+        root.addView(button("Actualiser les quatre comptes") {
+            PulseWidget.scheduleRefresh(this)
+            PulseWidget.requestRefresh(this)
+            status.text = "Actualisation demandée. Le widget conservera la dernière mesure fiable."
+        })
+        root.addView(button("Déconnecter ce compte") { confirmDisconnect() })
+        status = label("", 13f, 0xFFC9DDEB.toInt())
+        root.addView(status)
+        root.addView(label(
+            "Sessions chiffrées sur ce téléphone. Aucune VM, aucun serveur. " +
+                "Rafraîchissement Android périodique, non garanti à l'heure exacte. " +
+                "API de quotas Anthropic non documentée.",
+            12f, 0xFF94A5BB.toInt()
+        ))
+        try {
+            AccountVault.ensureDefaults(this)
+            reloadAccounts()
+            PulseWidget.scheduleRefresh(this)
+        } catch (_: Exception) {
+            status.text = "Android Keystore indisponible. Les identifiants ne sont pas effacés."
+            verifyButton.isEnabled = false
+        }
+    }
+
+    private fun label(value: String, size: Float, color: Int) = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(color)
+        setPadding(0, dp(8), 0, dp(8))
+    }
+
+    private fun button(value: String, onPress: () -> Unit) = Button(this).apply {
+        text = value
+        setOnClickListener { onPress() }
+    }
+
+    private fun dp(value: Int) = (resources.displayMetrics.density * value).toInt()
+
+    private fun reloadAccounts() {
+        accounts = AccountVault.read(this)
+        picker.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item, accounts.map { it.label }
+        )
+        picker.setSelection(accounts.indexOfFirst { it.id == selectedId }.coerceAtLeast(0))
+        updateStatus()
+    }
+
+    private fun updateStatus() {
+        if (!::status.isInitialized) return
+        val account = try { AccountVault.find(this, selectedId) } catch (_: Exception) { null }
+        if (account == null) {
+            status.text = "Coffre non accessible"
+            return
+        }
+        val last = UsageCache.get(this, account.id)
+        val err = UsageCache.error(this, account.id)
+        val session = last?.limits?.firstOrNull { it.label == "Session" }
+        val week = last?.limits?.firstOrNull { it.label == "Weekly" }
+        status.text = account.label + " — " + (if (account.connected) "Connecté" else "Non connecté") +
+            "\nSession : " + (session?.percent?.toString()?.plus("%") ?: "—") +
+            "  •  Semaine : " + (week?.percent?.toString()?.plus("%") ?: "—") +
+            "\nDernière mesure : " + TimeLabels.age(last?.cachedAt) +
+            (if (err != null) "\nErreur : " + err else "")
+    }
+
+    private fun renameSelected() {
+        val account = AccountVault.find(this, selectedId) ?: return
+        val input = EditText(this).apply { setText(account.label); setSingleLine(true) }
+        AlertDialog.Builder(this).setTitle("Nom du compte").setView(input)
+            .setNegativeButton("Annuler", null)
+            .setPositiveButton("Enregistrer") { _, _ ->
+                val name = input.text.toString().trim().take(40)
+                if (name.isNotBlank()) {
+                    AccountVault.update(this, account.id) { it.copy(label = name) }
+                    reloadAccounts()
+                    PulseWidget.updateAll(this)
+                }
+            }.show()
+    }
+
+    private fun validateCode() {
+        val id = selectedId
+        val code = codeInput.text.toString().trim()
+        if (!code.contains("#")) {
+            status.text = "Colle le code complet au format code#state."
+            return
+        }
+        verifyButton.isEnabled = false
+        status.text = "Validation en cours…"
+        val ctx = applicationContext
+        executor.execute {
+            val error = try { TokenManager.completeLogin(ctx, id, code) }
+                catch (_: Exception) { "login_unavailable" }
+            val reading = if (error == null) ApiClient.fetchUsage(ctx, id) else null
+            if (reading != null) {
+                if (reading.error == null) UsageCache.save(ctx, id, reading)
+                else UsageCache.setError(ctx, id, reading.error)
             }
-
-            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
-                .hideSoftInputFromWindow(tokenInput.windowToken, 0)
-            connectButton.isEnabled = false
-            connectButton.text = "Connecting..."
-            statusText.text = "Connecting..."
-            statusText.setTextColor(0xFFAAAAAA.toInt())
-            statusText.visibility = View.VISIBLE
-
-            val appContext = applicationContext
-
-            executor.execute {
-                // Code from the "Sign in with Claude" flow looks like "code#state"
-                if (TokenManager.hasPendingLogin(appContext) && token.contains("#")) {
-                    val loginError = TokenManager.completeLogin(appContext, token)
-                    val result = if (loginError == null) ApiClient.fetchUsage(appContext) else null
-                    runOnUiThread {
-                        if (isFinishing) return@runOnUiThread
-                        if (result != null && result.error == null) {
-                            ApiClient.cacheUsage(appContext, result)
-                            clearAuthError(appContext)
-                            showConnected(statusText, connectButton, tokenInput, errorBanner)
-                        } else {
-                            statusText.text = when (loginError ?: result?.error) {
-                                "auth_error" -> "Code rejected or expired. Tap Sign in with Claude and try again."
-                                "state_mismatch" -> "That code is from an older sign-in. Tap Sign in with Claude again."
-                                "rate_limited" -> "Rate limited by Anthropic. Wait a minute and try again."
-                                "Offline" -> "Can't reach Anthropic. Check your connection."
-                                else -> "Couldn't connect (${loginError ?: result?.error}). Try again."
-                            }
-                            statusText.setTextColor(0xFFF44336.toInt())
-                            connectButton.text = if (TokenManager.hasCredentials(appContext)) "Update Token" else "Connect"
-                            connectButton.isEnabled = true
-                        }
-                    }
-                    return@execute
-                }
-
-                // Try as access token first
-                val directResult = ApiClient.fetchUsageWithAccessToken(appContext, token)
-
-                if (directResult.error == null) {
-                    TokenManager.saveAccessToken(appContext, token)
-                    ApiClient.cacheUsage(appContext, directResult)
-                    clearAuthError(appContext)
-
-                    runOnUiThread {
-                        if (isFinishing) return@runOnUiThread
-                        statusText.text = "Connected \u2714"
-                        statusText.setTextColor(0xFF4CAF50.toInt())
-                        connectButton.text = "Update Token"
-                        connectButton.isEnabled = true
-                        tokenInput.text.clear()
-                        errorBanner.visibility = View.GONE
-                        // Show masked token as hint
-                        val masked = TokenManager.getMaskedToken(appContext)
-                        if (masked != null) tokenInput.hint = masked
-                        triggerWidgetUpdate()
-                        ensurePeriodicRefresh()
-                    }
-                    return@execute
-                }
-
-                // Try as refresh token
-                TokenManager.saveRefreshToken(appContext, token)
-                val refreshResult = ApiClient.fetchUsage(appContext)
-
-                runOnUiThread {
-                    if (isFinishing) return@runOnUiThread
-
-                    if (refreshResult.error == null) {
-                        ApiClient.cacheUsage(appContext, refreshResult)
-                        clearAuthError(appContext)
-                        statusText.text = "Connected \u2714"
-                        statusText.setTextColor(0xFF4CAF50.toInt())
-                        connectButton.text = "Update Token"
-                        connectButton.isEnabled = true
-                        tokenInput.text.clear()
-                        errorBanner.visibility = View.GONE
-                        val masked = TokenManager.getMaskedToken(appContext)
-                        if (masked != null) tokenInput.hint = masked
-                        triggerWidgetUpdate()
-                        ensurePeriodicRefresh()
-                    } else {
-                        statusText.text = when (refreshResult.error) {
-                            "auth_error" -> "Invalid token. Check and try again."
-                            "rate_limited" -> "Rate limited by Anthropic. Wait a minute and try again."
-                            "Offline" -> "Can't reach Anthropic. Check your connection."
-                            else -> "Couldn't connect (${refreshResult.error}). Try again."
-                        }
-                        statusText.setTextColor(0xFFF44336.toInt())
-                        // Only discard the token if Anthropic actually rejected it
-                        if (refreshResult.error == "auth_error") TokenManager.clearCredentials(appContext)
-                        connectButton.text = if (TokenManager.hasCredentials(appContext)) "Update Token" else "Connect"
-                        connectButton.isEnabled = true
-                    }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                verifyButton.isEnabled = true
+                if (error == null) {
+                    codeInput.text.clear()
+                    PulseWidget.scheduleRefresh(ctx)
+                    PulseWidget.updateAll(ctx)
+                    status.text = if (reading?.error == null)
+                        "Compte connecté. Quotas récupérés." else
+                        "Compte connecté. Quotas temporairement indisponibles."
+                } else {
+                    status.text = "Connexion échouée : " + error
                 }
             }
         }
     }
 
-    private fun showConnected(statusText: TextView, connectButton: Button, tokenInput: EditText, errorBanner: LinearLayout) {
-        statusText.text = "Connected \u2714"
-        statusText.setTextColor(0xFF4CAF50.toInt())
-        statusText.visibility = View.VISIBLE
-        connectButton.text = "Update Token"
-        connectButton.isEnabled = true
-        tokenInput.text.clear()
-        errorBanner.visibility = View.GONE
-        triggerWidgetUpdate()
-        ensurePeriodicRefresh()
+    private fun confirmDisconnect() {
+        val account = AccountVault.find(this, selectedId) ?: return
+        AlertDialog.Builder(this).setTitle("Déconnecter " + account.label + " ?")
+            .setMessage("Les jetons et les relevés de ce compte seront supprimés.")
+            .setNegativeButton("Annuler", null)
+            .setPositiveButton("Déconnecter") { _, _ ->
+                TokenManager.disconnect(this, account.id)
+                UsageCache.clear(this, account.id)
+                updateStatus()
+                PulseWidget.updateAll(this)
+            }.show()
     }
 
-    private fun showErrorState(statusText: TextView, errorBanner: LinearLayout, tokenInput: EditText) {
-        statusText.text = "Token expired \u2014 paste a new one below"
-        statusText.setTextColor(0xFFF44336.toInt())
-        statusText.visibility = View.VISIBLE
-        errorBanner.visibility = View.VISIBLE
-        val masked = TokenManager.getMaskedToken(this)
-        if (masked != null) tokenInput.hint = masked
-    }
-
-    private fun clearAuthError(context: Context) {
-        context.getSharedPreferences("pulse_cache", Context.MODE_PRIVATE)
-            .edit().putBoolean("auth_error", false).apply()
+    override fun onResume() {
+        super.onResume()
+        if (::status.isInitialized) updateStatus()
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         executor.shutdownNow()
-    }
-
-    private fun ensurePeriodicRefresh() {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-
-        val work = PeriodicWorkRequestBuilder<RefreshWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(constraints)
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
-            .build()
-
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            "pulse_periodic_refresh",
-            ExistingPeriodicWorkPolicy.KEEP,
-            work
-        )
-    }
-
-    private fun triggerWidgetUpdate() {
-        val appWidgetManager = AppWidgetManager.getInstance(this)
-        val widgetComponent = ComponentName(this, PulseWidget::class.java)
-        val widgetIds = appWidgetManager.getAppWidgetIds(widgetComponent)
-        if (widgetIds.isNotEmpty()) {
-            val intent = Intent(this, PulseWidget::class.java).apply {
-                action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
-                putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, widgetIds)
-            }
-            sendBroadcast(intent)
-        }
+        super.onDestroy()
     }
 }

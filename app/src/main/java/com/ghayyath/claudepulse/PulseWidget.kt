@@ -6,273 +6,129 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.res.ColorStateList
-import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.view.View
 import android.widget.RemoteViews
-import androidx.work.*
-import java.text.SimpleDateFormat
-import java.util.*
-import java.util.concurrent.Executors
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
 
+/** Four accounts on a single resizable native widget. No KWGT and no external server. */
 class PulseWidget : AppWidgetProvider() {
+    override fun onUpdate(ctx: Context, manager: AppWidgetManager, ids: IntArray) {
+        super.onUpdate(ctx, manager, ids)
+        scheduleRefresh(ctx)
+        render(ctx, manager, ids)
+    }
+
+    override fun onEnabled(ctx: Context) {
+        super.onEnabled(ctx)
+        scheduleRefresh(ctx)
+        requestRefresh(ctx)
+    }
+
+    override fun onReceive(ctx: Context, intent: Intent) {
+        super.onReceive(ctx, intent)
+        if (intent.action == ACTION_REFRESH) requestRefresh(ctx)
+    }
 
     companion object {
-        private val executor = Executors.newSingleThreadExecutor()
-        private const val COLOR_GREEN = 0xFF6ee7b7.toInt()  // 0-49%
-        private const val COLOR_YELLOW = 0xFFFF9800.toInt() // 50-74%
-        private const val COLOR_ORANGE = 0xFFFF5722.toInt() // 75-89%
-        private const val COLOR_RED = 0xFFF44336.toInt()    // 90-100%
-        private const val ACTION_REFRESH = "com.ghayyath.claudepulse.ACTION_REFRESH"
-        private const val WORK_NAME = "pulse_periodic_refresh"
+        private const val ACTION_REFRESH = "com.trigenys.claudemonitor.REFRESH"
 
-        /** Layout slots for limit rows: container, label, bar, pct, reset. Extra limits beyond this are dropped. */
-        private data class RowIds(val row: Int, val label: Int, val bar: Int, val pct: Int, val reset: Int)
-        private val ROWS = listOf(
-            RowIds(R.id.row1, R.id.row1_label, R.id.row1_bar, R.id.row1_pct, R.id.row1_reset),
-            RowIds(R.id.row2, R.id.row2_label, R.id.row2_bar, R.id.row2_pct, R.id.row2_reset),
-            RowIds(R.id.row3, R.id.row3_label, R.id.row3_bar, R.id.row3_pct, R.id.row3_reset),
-            RowIds(R.id.row4, R.id.row4_label, R.id.row4_bar, R.id.row4_pct, R.id.row4_reset)
+        private data class RowIds(
+            val name: Int, val usage: Int, val reset: Int,
+            val sessionBar: Int, val weeklyBar: Int
         )
-    }
 
-    override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == ACTION_REFRESH) {
-            val appWidgetManager = AppWidgetManager.getInstance(context)
-            val widgetComponent = ComponentName(context, PulseWidget::class.java)
-            val widgetIds = appWidgetManager.getAppWidgetIds(widgetComponent)
-            onUpdate(context, appWidgetManager, widgetIds)
-            return
-        }
-        super.onReceive(context, intent)
-    }
-
-    override fun onEnabled(context: Context) {
-        super.onEnabled(context)
-        enqueuePeriodicRefresh(context)
-    }
-
-    override fun onDisabled(context: Context) {
-        super.onDisabled(context)
-        WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
-    }
-
-    override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        enqueuePeriodicRefresh(context)
-        for (appWidgetId in appWidgetIds) {
-            renderWidget(context, appWidgetManager, appWidgetId)
-            scheduleRefresh(context, appWidgetManager, appWidgetId)
-        }
-    }
-
-    override fun onAppWidgetOptionsChanged(context: Context, appWidgetManager: AppWidgetManager, appWidgetId: Int, newOptions: Bundle?) {
-        renderWidget(context, appWidgetManager, appWidgetId)
-    }
-
-    private fun enqueuePeriodicRefresh(context: Context) {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-
-        val work = PeriodicWorkRequestBuilder<RefreshWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(constraints)
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
-            .build()
-
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            WORK_NAME,
-            ExistingPeriodicWorkPolicy.KEEP,
-            work
+        private val rows = listOf(
+            RowIds(R.id.account_name_1, R.id.account_usage_1, R.id.account_reset_1,
+                R.id.session_bar_1, R.id.weekly_bar_1),
+            RowIds(R.id.account_name_2, R.id.account_usage_2, R.id.account_reset_2,
+                R.id.session_bar_2, R.id.weekly_bar_2),
+            RowIds(R.id.account_name_3, R.id.account_usage_3, R.id.account_reset_3,
+                R.id.session_bar_3, R.id.weekly_bar_3),
+            RowIds(R.id.account_name_4, R.id.account_usage_4, R.id.account_reset_4,
+                R.id.session_bar_4, R.id.weekly_bar_4)
         )
-    }
 
-    private fun renderWidget(context: Context, appWidgetManager: AppWidgetManager, appWidgetId: Int) {
-        val data = loadCachedData(context) ?: UsageData.placeholder()
-        val prefs = context.getSharedPreferences("pulse_cache", Context.MODE_PRIVATE)
-        val hasAuthError = prefs.getBoolean("auth_error", false)
-        val options = appWidgetManager.getAppWidgetOptions(appWidgetId)
-        val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 250)
-        val isCompact = minWidth < 200
-
-        val views = if (isCompact) {
-            buildCompactViews(context, data)
-        } else {
-            buildFullViews(context, data, hasAuthError)
+        fun scheduleRefresh(ctx: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED).build()
+            val request = PeriodicWorkRequestBuilder<RefreshWorker>(15, TimeUnit.MINUTES)
+                .setConstraints(constraints)
+                .build()
+            WorkManager.getInstance(ctx).enqueueUniquePeriodicWork(
+                "trigenys_periodic_usage", ExistingPeriodicWorkPolicy.KEEP, request
+            )
         }
 
-        if (!isCompact) {
-            if (hasAuthError) {
-                // Tap widget body -> open SetupActivity for token recovery
-                val setupIntent = Intent(context, SetupActivity::class.java)
-                val setupPi = PendingIntent.getActivity(context, 0, setupIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                views.setOnClickPendingIntent(R.id.widget_root, setupPi)
-            } else {
-                // No body tap target — removed per spec (footer has Usage Page link)
-            }
-
-            // Tap "Refresh Now" -> trigger widget update
-            val refreshIntent = Intent(context, PulseWidget::class.java).apply {
-                action = ACTION_REFRESH
-            }
-            val refreshPi = PendingIntent.getBroadcast(context, 1, refreshIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            views.setOnClickPendingIntent(R.id.refresh_button, refreshPi)
-
-            // Tap "Usage Page" -> open usage page in browser
-            val usageIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://claude.ai/settings/usage"))
-            val usagePi = PendingIntent.getActivity(context, 2, usageIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            views.setOnClickPendingIntent(R.id.usage_page_button, usagePi)
+        fun requestRefresh(ctx: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED).build()
+            WorkManager.getInstance(ctx).enqueueUniqueWork(
+                "trigenys_manual_usage", ExistingWorkPolicy.KEEP,
+                OneTimeWorkRequestBuilder<RefreshWorker>().setConstraints(constraints).build()
+            )
         }
 
-        appWidgetManager.updateAppWidget(appWidgetId, views)
-    }
+        fun updateAll(ctx: Context) {
+            val manager = AppWidgetManager.getInstance(ctx)
+            val ids = manager.getAppWidgetIds(ComponentName(ctx, PulseWidget::class.java))
+            if (ids.isNotEmpty()) render(ctx, manager, ids)
+        }
 
-    private fun scheduleRefresh(context: Context, appWidgetManager: AppWidgetManager, appWidgetId: Int) {
-        try {
-            executor.execute {
-                try {
-                    val freshData = ApiClient.fetchUsage(context)
-                    if (freshData.error == null) {
-                        cacheData(context, freshData)
-                        renderWidget(context, appWidgetManager, appWidgetId)
+        private fun render(ctx: Context, manager: AppWidgetManager, widgetIds: IntArray) {
+            val accounts = try {
+                AccountVault.ensureDefaults(ctx)
+                AccountVault.read(ctx)
+            } catch (_: Exception) {
+                emptyList()
+            }
+            widgetIds.forEach { widgetId ->
+                val views = RemoteViews(ctx.packageName, R.layout.widget_accounts)
+                val refreshIntent = Intent(ctx, PulseWidget::class.java).apply {
+                    action = ACTION_REFRESH
+                }
+                val refreshAction = PendingIntent.getBroadcast(
+                    ctx, 0, refreshIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                views.setOnClickPendingIntent(R.id.refresh_button, refreshAction)
+                val openIntent = Intent(ctx, SetupActivity::class.java)
+                val openAction = PendingIntent.getActivity(
+                    ctx, 0, openIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                views.setOnClickPendingIntent(R.id.widget_title, openAction)
+
+                rows.forEachIndexed { index, ids ->
+                    val account = accounts.getOrNull(index)
+                    val snapshot = account?.let { UsageCache.get(ctx, it.id) }
+                    val error = account?.let { UsageCache.error(ctx, it.id) }
+                    val session = snapshot?.limits?.firstOrNull { it.label == "Session" }
+                    val weekly = snapshot?.limits?.firstOrNull { it.label == "Weekly" }
+                    views.setTextViewText(ids.name, account?.label ?: "Compte " + (index + 1))
+                    val sessionText = session?.percent?.toString()?.plus("%") ?: "—"
+                    val weeklyText = weekly?.percent?.toString()?.plus("%") ?: "—"
+                    views.setTextViewText(ids.usage, "5 h  " + sessionText + "   •   7 j  " + weeklyText)
+                    views.setProgressBar(ids.sessionBar, 100, session?.percent?.coerceIn(0, 100) ?: 0, false)
+                    views.setProgressBar(ids.weeklyBar, 100, weekly?.percent?.coerceIn(0, 100) ?: 0, false)
+                    val detail = when {
+                        account == null -> "Coffre non accessible"
+                        !account.connected -> "Non connecté"
+                        snapshot == null -> "En attente du premier relevé"
+                        else -> "↻ 5h " + TimeLabels.untilReset(session?.resetsAt) +
+                            "  /  7j " + TimeLabels.untilReset(weekly?.resetsAt) +
+                            "  •  " + TimeLabels.age(snapshot.cachedAt)
                     }
-                } catch (_: Exception) {}
-            }
-        } catch (_: Exception) {}
-    }
-
-    /** Tint a ProgressBar's fill color to match the percentage tier (API 31+, green fallback on older) */
-    private fun setBarTint(views: RemoteViews, barId: Int, pct: Int) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            views.setColorStateList(barId, "setProgressTintList", ColorStateList.valueOf(getColor(pct)))
-        }
-    }
-
-    private fun buildFullViews(context: Context, data: UsageData, hasAuthError: Boolean = false): RemoteViews {
-        val views = RemoteViews(context.packageName, R.layout.widget_layout)
-
-        // Header
-        if (data.planLabel.isNotEmpty()) {
-            views.setTextViewText(R.id.plan_label, "\u00b7 ${data.planLabel}")
-        } else {
-            views.setTextViewText(R.id.plan_label, "")
-        }
-        if (hasAuthError) {
-            views.setTextViewText(R.id.updated_ago, "Token expired \u00b7 Tap to fix")
-            views.setTextColor(R.id.updated_ago, COLOR_RED)
-        } else {
-            views.setTextViewText(R.id.updated_ago, formatTimeSince(data.cachedAt))
-            views.setTextColor(R.id.updated_ago, 0x80FFFFFF.toInt())
-        }
-
-        ROWS.forEachIndexed { i, ids ->
-            val limit = data.limits.getOrNull(i)
-            if (limit == null) {
-                views.setViewVisibility(ids.row, View.GONE)
-                return@forEachIndexed
-            }
-            views.setViewVisibility(ids.row, View.VISIBLE)
-            views.setTextViewText(ids.label, limit.label)
-
-            if (hasAuthError) {
-                // Error state: dashes instead of stale numbers
-                views.setProgressBar(ids.bar, 100, 0, false)
-                views.setTextViewText(ids.pct, "\u2014")
-                views.setTextViewText(ids.reset, "")
-                views.setTextColor(ids.pct, COLOR_RED)
-            } else {
-                val pct = limit.percent.coerceIn(0, 100)
-                views.setProgressBar(ids.bar, 100, pct, false)
-                views.setTextViewText(ids.pct, "${pct}%")
-                views.setTextViewText(ids.reset, formatResetTime(limit.resetsAt))
-                views.setTextColor(ids.pct, getColor(pct))
-                setBarTint(views, ids.bar, pct)
+                    val suffix = if (error != null) "  ⚠ " + error else ""
+                    views.setTextViewText(ids.reset, detail + suffix)
+                }
+                manager.updateAppWidget(widgetId, views)
             }
         }
-
-        return views
-    }
-
-    private fun buildCompactViews(context: Context, data: UsageData): RemoteViews {
-        val views = RemoteViews(context.packageName, R.layout.widget_layout_small)
-
-        ROWS.forEachIndexed { i, ids ->
-            val limit = data.limits.getOrNull(i)
-            if (limit == null) {
-                views.setViewVisibility(ids.row, View.GONE)
-                return@forEachIndexed
-            }
-            val pct = limit.percent.coerceIn(0, 100)
-            views.setViewVisibility(ids.row, View.VISIBLE)
-            views.setProgressBar(ids.bar, 100, pct, false)
-            views.setTextViewText(ids.pct, "${pct}%")
-            views.setTextColor(ids.pct, getColor(pct))
-            setBarTint(views, ids.bar, pct)
-        }
-
-        return views
-    }
-
-    private fun getColor(pct: Int): Int = when {
-        pct >= 90 -> COLOR_RED
-        pct >= 75 -> COLOR_ORANGE
-        pct >= 50 -> COLOR_YELLOW
-        else -> COLOR_GREEN
-    }
-
-    private fun formatResetTime(isoTime: String?): String {
-        if (isoTime.isNullOrEmpty() || isoTime == "null") return ""
-        return try {
-            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
-            sdf.timeZone = TimeZone.getTimeZone("UTC")
-            val cleaned = isoTime.replace(Regex("[+-]\\d{2}:\\d{2}$"), "").replace("Z", "")
-            val resetDate = sdf.parse(cleaned) ?: return ""
-            val diffMs = resetDate.time - System.currentTimeMillis()
-            if (diffMs <= 0) return "Resetting..."
-            val hours = (diffMs / 3_600_000).toInt()
-            val minutes = ((diffMs % 3_600_000) / 60_000).toInt()
-            if (hours >= 24) {
-                val days = hours / 24
-                val remHours = hours % 24
-                "Resets in ${days}d ${remHours}h"
-            } else {
-                "Resets in ${hours}h ${minutes}m"
-            }
-        } catch (e: Exception) {
-            ""
-        }
-    }
-
-    private fun formatTimeSince(isoTime: String?): String {
-        if (isoTime.isNullOrEmpty() || isoTime == "null") return "Updated just now"
-        return try {
-            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-            sdf.timeZone = TimeZone.getTimeZone("UTC")
-            val cachedDate = sdf.parse(isoTime) ?: return "Updated just now"
-            val diffMs = System.currentTimeMillis() - cachedDate.time
-            val minutes = (diffMs / 60_000).toInt()
-            when {
-                minutes < 1 -> "Updated just now"
-                minutes < 60 -> "Updated ${minutes}m ago"
-                else -> "Updated ${minutes / 60}h ago"
-            }
-        } catch (e: Exception) {
-            "Updated just now"
-        }
-    }
-
-    private fun cacheData(context: Context, data: UsageData) = ApiClient.cacheUsage(context, data)
-
-    private fun loadCachedData(context: Context): UsageData? {
-        val prefs = context.getSharedPreferences("pulse_cache", Context.MODE_PRIVATE)
-        val raw = prefs.getString("limits_json", null) ?: return null
-        val limits = try { UsageData.limitsFromJson(raw) } catch (_: Exception) { return null }
-        return UsageData(
-            limits = limits,
-            planLabel = prefs.getString("plan_label", "") ?: "",
-            cachedAt = prefs.getString("cached_at", null)
-        )
     }
 }

@@ -5,14 +5,14 @@ plugins {
 
 android {
     namespace = "com.ghayyath.claudepulse"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.ghayyath.claudepulse"
+        applicationId = "com.trigenys.claudemonitor"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 9
-        versionName = "2.4"
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1.0"
     }
 
     compileOptions {
@@ -20,12 +20,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    kotlinOptions { jvmTarget = "17" }
 }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.work:work-runtime-ktx:2.9.0")
+    testImplementation("junit:junit:4.13.2")
 }
