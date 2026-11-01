@@ -1,41 +1,33 @@
 package com.ghayyath.claudepulse
 
-import android.appwidget.AppWidgetManager
-import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-class RefreshWorker(
-    private val context: Context,
-    params: WorkerParameters
-) : CoroutineWorker(context, params) {
+/** Periodically fetch each account independently; preserve cached snapshots on error. */
+class RefreshWorker(private val ctx: Context, params: WorkerParameters) :
+    CoroutineWorker(ctx, params) {
 
-    override suspend fun doWork(): Result {
-        val data = ApiClient.fetchUsage(context)
-
-        // Cache auth error state so widget and SetupActivity can read it
-        val prefs = context.getSharedPreferences("pulse_cache", Context.MODE_PRIVATE)
-        if (data.error == "auth_error") {
-            prefs.edit().putBoolean("auth_error", true).putLong("auth_error_at", System.currentTimeMillis()).apply()
-        } else if (data.error == null) {
-            prefs.edit().putBoolean("auth_error", false).apply()
-            ApiClient.cacheUsage(context, data)
-        }
-
-        // Always trigger widget repaint — even on error, so "Updated Xm ago" stays current
-        val manager = AppWidgetManager.getInstance(context)
-        val component = ComponentName(context, PulseWidget::class.java)
-        val ids = manager.getAppWidgetIds(component)
-        if (ids.isNotEmpty()) {
-            val intent = Intent(context, PulseWidget::class.java).apply {
-                action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
-                putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, ids)
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        try {
+            AccountVault.ensureDefaults(ctx)
+            AccountVault.read(ctx).filter { it.connected }.forEach { account ->
+                val result = ApiClient.fetchUsage(ctx, account.id)
+                if (result.error == null) {
+                    UsageCache.save(ctx, account.id, result)
+                } else {
+                    UsageCache.setError(ctx, account.id, result.error)
+                }
             }
-            context.sendBroadcast(intent)
+            PulseWidget.updateAll(ctx)
+            Result.success()
+        } catch (_: Exception) {
+            // Keystore unavailable / device locked / temporary provider failure.
+            // Do not delete credentials or replace valid snapshots with zeroes.
+            PulseWidget.updateAll(ctx)
+            Result.retry()
         }
-
-        return if (data.error == null) Result.success() else Result.retry()
     }
 }

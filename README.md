@@ -1,221 +1,33 @@
-# Claude Pulse · Android
+# Trigenys Claude Monitor — Android
 
-A minimal Android home screen widget that shows your Claude subscription usage at a glance. No app to open — the widget lives on your home screen and updates automatically.
+Android app and native home-screen widget for four independent Claude subscription accounts.
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green)
-![Platform: Android](https://img.shields.io/badge/platform-Android%208%2B-brightgreen)
-![Kotlin](https://img.shields.io/badge/language-Kotlin-purple)
+Based on [Claude Pulse Android](https://github.com/G-biggy/claude-pulse-android), copyright 2026 Ghayyath Huzayen. MIT license; original attribution and LICENSE retained.
 
----
+## Features
 
-<p align="center">
-  <img src="docs/images/widget.png" width="400" alt="Claude Pulse widget on home screen" />
-</p>
+- Four independent account profiles: Ibrahim, Thunderbrainstorm, Trigenys Data School, Hello Trigenys (labels can be edited).
+- Separate OAuth PKCE verifier, state, access token and refresh token per profile.
+- Credentials and account labels encrypted at rest with AES-256-GCM using Android Keystore.
+- One 4-by-4 home-screen widget showing provider-reported 5-hour and 7-day utilization, reset times and last reading age.
+- Android WorkManager periodic requests around every 15 minutes (timing is subject to OS battery restrictions), plus manual refresh.
+- Last reliable usage readings remain visible after an API failure; missing values show a dash rather than a fabricated zero.
+- No VMs, desktop collector, KWGT, external backend or server.
 
-## What It Does
+## Build and install
 
-A resizable home screen widget that displays:
+Use JDK 17 and Android SDK platform 35.
 
-- **Session** — your current 5-hour session utilization
-- **Weekly** — 7-day rolling usage across all models
-- **Sonnet** — weekly Sonnet-specific usage
-- **Plan badge** — shows your subscription tier (Free / Pro / Max 5x / Max 20x)
-- **Reset countdowns** — time remaining until each window resets
-- **Color-coded** — green under 50%, then yellow / orange / red as usage climbs
-- **Refresh Now** — tap to force an immediate data refresh from the widget itself
-- **Auto-refresh** — updates every 10 minutes in the background
+    ./gradlew :app:testDebugUnitTest :app:assembleDebug
 
-Percentage text changes color as usage climbs. Tap the widget body to open your Claude usage page in the browser.
+GitHub Actions automatically builds a debug APK artifact named trigenys-claude-monitor-debug-apk. Download it from a successful Actions run for personal device testing.
 
-### Color Thresholds
+On Android 8 or later, install the APK, open the app and select each of the four profiles. Use Sign in with Claude to start a separate browser OAuth authorization for that account. Paste the complete code plus state from the provider into the app, then connect the next account. Do not copy desktop Claude Code refresh tokens because they rotate and may cause desktop logouts. Finally add the Trigenys Claude Monitor widget to the Android home screen.
 
-| Utilization | Color | Hex |
-|-------------|-------|-----|
-| 0–49% | 🟢 Green | `#6ee7b7` |
-| 50–74% | 🟡 Yellow | `#FF9800` |
-| 75–89% | 🟠 Orange | `#FF5722` |
-| 90–100% | 🔴 Red | `#F44336` |
+## Security and compatibility
 
-### Widget Sizes
+This is independent software, not endorsed by Anthropic. OAuth and consumer usage endpoints are undocumented and can change or stop working. The OAuth authorization may grant permissions beyond usage-only access; inspect and test on one account before connecting others. Keep tokens, cookies, and authorization codes out of chats and GitHub issues.
 
-The widget is fully resizable. Drag it wider or taller and the layout adapts:
+Android Keystore encryption keys belong to this device; clearing app data or reinstalling requires account reconnection. Android may delay background refreshes. Stored values are historical readings until the next successful refresh.
 
-| Size | Layout |
-|------|--------|
-| **Compact** | Three progress bars with percentages only |
-| **Standard** | Full layout with labels, reset timers, plan badge, and refresh button |
-
-The three bar rows distribute evenly across whatever height you give the widget — compact when small, relaxed when tall.
-
-## How It Works
-
-The app connects directly to Anthropic’s usage API from your phone. No server, no proxy, no middleman.
-
-### Setup Flow
-
-1. Open Claude Pulse on your phone and tap **Sign in with Claude**
-2. Approve access in the browser, then copy the code the page shows you
-3. Paste it into the app and tap **Connect** — the app gets its own token and starts fetching usage data
-4. Add the widget to your home screen from your launcher’s widget picker
-
-You can reopen the app at any time to update your token if needed.
-
-### Why a Refresh Token?
-
-Claude’s usage API uses OAuth authentication tied to Claude Code. There’s no standalone API key for usage data. The refresh token is a long-lived credential that lets the app obtain short-lived access tokens without re-authenticating. You extract it once, and the app maintains the session indefinitely.
-
-## Prerequisites
-
-| Requirement | Details |
-|------------|--------|
-| Android 8.0+ (API 26) | Covers 95%+ of active devices |
-| Claude Code on a computer | Needed once, to extract the refresh token |
-| Sideloading enabled | The APK isn’t on Google Play — you install it directly |
-
-## Install
-
-### 1. (Optional) Get a Refresh Token Manually
-
-The app's **Sign in with Claude** button is the recommended path: it gives the phone its own session. Pasting a refresh token copied from Claude Code also works, but that token is shared with your computer and rotates on every refresh, so one side can sign the other out.
-
-On your Mac or Linux machine with Claude Code installed and signed in:
-
-```bash
-# macOS — reads from Keychain
-security find-generic-password -s 'Claude Code-credentials' -w | python3 -c "
-import sys, json
-creds = json.load(sys.stdin)
-print(creds.get('claudeAiOauth', {}).get('refreshToken', 'NOT FOUND'))
-"
-```
-
-```bash
-# Linux / alternative — reads from credentials file
-python3 -c "
-import json
-with open('$HOME/.claude/.credentials.json') as f:
-    creds = json.load(f)
-print(creds.get('claudeAiOauth', {}).get('refreshToken', 'NOT FOUND'))
-"
-```
-
-Copy the output. You’ll paste it into the app in a moment.
-
-### 2. Install the APK
-
-Download the latest APK from the [Releases](../../releases) page, or build from source (see below).
-
-Transfer it to your phone and install. Android will ask you to allow installation from unknown sources — this is normal for sideloaded apps.
-
-### 3. First Launch
-
-<p align="center">
-  <img src="docs/images/setup.png" width="280" alt="Claude Pulse setup screen" />
-</p>
-
-Open Claude Pulse → **Sign in with Claude** → paste the code → tap **Connect**. The app will verify the token and start fetching usage data. Add the widget to your home screen from your launcher’s widget picker.
-
-## Build from Source
-
-```bash
-git clone https://github.com/G-biggy/claude-pulse-android.git
-cd claude-pulse-android
-
-# Requires Android SDK and Java 17+
-# If you don’t have the SDK:
-#   brew install --cask android-commandlinetools   (macOS)
-#   sdkmanager "platforms;android-34" "build-tools;34.0.0"
-
-./gradlew assembleRelease
-```
-
-The APK will be at `app/build/outputs/apk/release/app-release-unsigned.apk`.
-
-To sign it for your device:
-
-```bash
-# Generate a keystore (one-time)
-keytool -genkey -v -keystore release.keystore -alias pulse -keyalg RSA -keysize 2048 -validity 10000
-
-# Sign
-apksigner sign --ks release.keystore --ks-key-alias pulse app/build/outputs/apk/release/app-release-unsigned.apk
-```
-
-## API Details
-
-Same as the [Mac version](https://github.com/G-biggy/claude-pulse-mac) — this app uses **undocumented** Anthropic endpoints:
-
-**Usage data:**
-```
-GET https://api.anthropic.com/api/oauth/usage
-Authorization: Bearer <access_token>
-anthropic-beta: oauth-2025-04-20
-```
-
-**Token refresh:**
-```
-POST https://console.anthropic.com/v1/oauth/token
-Content-Type: application/json
-
-{
-  "grant_type": "refresh_token",
-  "refresh_token": "<refresh_token>",
-  "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-}
-```
-
-The `client_id` is Claude Code’s official OAuth client ID.
-
-> **These endpoints are undocumented and may change without notice.** If the API changes, the widget will show an error state. Check this repo for updates.
-
-## Project Structure
-
-```
-claude-pulse-android/
-├── app/
-│   └── src/main/
-│       ├── java/com/.../claudepulse/
-│       │   ├── ApiClient.kt        # Anthropic API + token refresh
-│       │   ├── TokenManager.kt     # Secure token storage + auto-refresh
-│       │   ├── PulseWidget.kt      # Widget rendering and update logic
-│       │   ├── UsageData.kt        # Data models + plan detection
-│       │   └── SetupActivity.kt    # Token setup screen (reopenable)
-│       └── res/
-│           ├── layout/             # Widget layouts (compact + full)
-│           └── xml/                # Widget provider metadata
-├── build.gradle.kts
-├── LICENSE
-└── README.md
-```
-
-## Security Notes
-
-- Your refresh token is stored locally on your device
-- The token is never transmitted anywhere except directly to Anthropic’s servers over HTTPS
-- No analytics, no tracking, no telemetry — the app talks to exactly one domain: `anthropic.com`
-- The app requests only `INTERNET` and `RECEIVE_BOOT_COMPLETED` permissions
-
-## Troubleshooting
-
-**Widget shows "Offline"**
-Check your internet connection. The widget retries on the next 10-minute cycle, or tap **Refresh Now**.
-
-**Widget shows "Auth Error"**
-Your refresh token may have been revoked. Open the app from your launcher and paste a new token.
-
-**Widget doesn’t appear in widget picker**
-After installing the APK, you may need to restart your launcher. On most phones: long-press home screen → Widgets → search "Pulse".
-
-## Acknowledgments
-
-Companion project to [Claude Pulse · macOS](https://github.com/G-biggy/claude-pulse-mac).
-
-Inspired by [Blimp-Labs/claude-usage-bar](https://github.com/Blimp-Labs/claude-usage-bar).
-
-## Disclaimer
-
-This project is not affiliated with, endorsed by, or officially supported by Anthropic. It uses undocumented API endpoints that may change at any time. Use at your own discretion.
-
-## License
-
-MIT — do whatever you want with it. See [LICENSE](LICENSE) for details.
+MIT. Keep the original author attribution and LICENSE when redistributing.

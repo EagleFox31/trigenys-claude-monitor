@@ -4,85 +4,45 @@ import android.content.Context
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.*
+import java.time.Instant
 
+/** Direct, per-account usage fetch. Anthropic OAuth usage endpoints are undocumented. */
 object ApiClient {
-
     private const val USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
-    private const val API_BETA = "oauth-2025-04-20"
 
-    fun fetchUsage(context: Context): UsageData {
-        val token = TokenManager.getAccessToken(context)
-            ?: return UsageData.placeholder().copy(error = TokenManager.lastRefreshError ?: "auth_error")
-
-        val result = callUsageApi(token)
-
-        if (result.error == "auth_error") {
-            val freshToken = TokenManager.refreshAccessToken(context)
-                ?: return UsageData.placeholder().copy(error = TokenManager.lastRefreshError ?: "auth_error")
-            return callUsageApi(freshToken)
+    fun fetchUsage(ctx: Context, accountId: String): UsageData {
+        val auth = TokenManager.getAccessToken(ctx, accountId)
+        if (auth.token == null) {
+            return UsageData.placeholder().copy(error = auth.error ?: "auth_required")
         }
-
-        return result
+        val first = query(auth.token)
+        if (first.error != "auth_required") return first
+        val renewed = TokenManager.refreshAccessToken(ctx, accountId, force = true)
+        if (renewed.token == null) {
+            return UsageData.placeholder().copy(error = renewed.error ?: "auth_required")
+        }
+        return query(renewed.token)
     }
 
-    /** Try using a token directly as an access token */
-    fun fetchUsageWithAccessToken(context: Context, accessToken: String): UsageData {
-        return callUsageApi(accessToken)
-    }
-
-    /** Cache usage data to SharedPreferences for widget to read */
-    fun cacheUsage(context: Context, data: UsageData) {
-        val prefs = context.getSharedPreferences("pulse_cache", Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString("limits_json", UsageData.limitsToJson(data.limits))
-            .putString("plan_label", data.planLabel)
-            .putString("cached_at", data.cachedAt)
-            .apply()
-    }
-
-    private fun callUsageApi(accessToken: String): UsageData {
-        val url = URL(USAGE_URL)
-        val conn = url.openConnection() as HttpURLConnection
+    private fun query(token: String): UsageData {
+        val conn = URL(USAGE_URL).openConnection() as HttpURLConnection
         return try {
             conn.requestMethod = "GET"
-            conn.setRequestProperty("Authorization", "Bearer $accessToken")
-            conn.setRequestProperty("anthropic-beta", API_BETA)
-            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Authorization", "Bearer " + token)
+            conn.setRequestProperty("anthropic-beta", "oauth-2025-04-20")
             conn.setRequestProperty("Accept", "application/json")
-            conn.connectTimeout = 10_000
-            conn.readTimeout = 10_000
-
-            if (conn.responseCode == 200) {
-                val body = conn.inputStream.bufferedReader().readText()
-                val json = JSONObject(body)
-
-                val now = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-                    timeZone = TimeZone.getTimeZone("UTC")
-                }.format(Date())
-
-                UsageData.fromJson(json).copy(cachedAt = now)
-            } else {
-                val errorType = when (conn.responseCode) {
-                    401, 403 -> "auth_error"
-                    429 -> "rate_limited"
-                    else -> {
-                        // Check error body for rate_limit_error type
-                        val errorBody = try { conn.errorStream?.bufferedReader()?.readText() } catch (_: Exception) { null }
-                        if (errorBody != null) {
-                            try {
-                                val errorJson = JSONObject(errorBody)
-                                val type = errorJson.optJSONObject("error")?.optString("type")
-                                if (type == "rate_limit_error") "rate_limited" else "HTTP ${conn.responseCode}"
-                            } catch (_: Exception) { "HTTP ${conn.responseCode}" }
-                        } else "HTTP ${conn.responseCode}"
-                    }
-                }
-                UsageData.placeholder().copy(error = errorType)
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+            when (conn.responseCode) {
+                200 -> UsageData.fromJson(
+                    JSONObject(conn.inputStream.bufferedReader().readText())
+                ).copy(cachedAt = Instant.now().toString(), error = null)
+                401, 403 -> UsageData.placeholder().copy(error = "auth_required")
+                429 -> UsageData.placeholder().copy(error = "rate_limited")
+                else -> UsageData.placeholder().copy(error = "http_" + conn.responseCode)
             }
-        } catch (e: Exception) {
-            UsageData.placeholder().copy(error = "Offline")
+        } catch (_: Exception) {
+            UsageData.placeholder().copy(error = "offline_or_unavailable")
         } finally {
             conn.disconnect()
         }
